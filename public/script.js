@@ -1,68 +1,127 @@
-// Check for browser support
-const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-if (!SpeechRecognition) {
-  alert("Web Speech API is not supported in this browser. Try Chrome or Safari Mobile!");
-}
+const videoElement = document.getElementById('webcam');
+const statusElement = document.getElementById('status');
+const toggleCamBtn = document.getElementById('toggle-cam-btn');
 
-const recognition = new SpeechRecognition();
-recognition.continuous = false; // Process utterance by utterance
-recognition.interimResults = false;
-recognition.lang = 'en-US';
-
-const synth = window.speechSynthesis;
+let currentStream = null;
+let useFacingMode = "user"; // "user" = front/selfie, "environment" = back camera
 let isAiSpeaking = false;
 
-// 1. Automatically start listening as soon as the page loads
-window.addEventListener('load', () => {
-  startListeningLoop();
-});
+// Initialize Web Speech APIs
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+const recognition = SpeechRecognition ? new SpeechRecognition() : null;
+const synth = window.speechSynthesis;
 
-function startListeningLoop() {
-  if (!isAiSpeaking) {
-    try {
-      recognition.start();
-      console.log("Listening for your voice...");
-    } catch (e) {
-      // Catch errors if it's already running
-    }
+if (recognition) {
+  recognition.continuous = false;
+  recognition.interimResults = false;
+  recognition.lang = 'en-US';
+} else {
+  statusElement.textContent = "Speech recognition not supported in this browser.";
+}
+
+// 1. Start Camera Function with specific Facing Mode
+async function startCamera() {
+  if (currentStream) {
+    currentStream.getTracks().forEach(track => track.stop());
+  }
+
+  try {
+    const constraints = {
+      video: { facingMode: useFacingMode },
+      audio: false
+    };
+    currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+    videoElement.srcObject = currentStream;
+    statusElement.textContent = "Listening... Speak naturally!";
+    startListeningLoop();
+  } catch (err) {
+    console.error("Camera error: ", err);
+    statusElement.textContent = "Error accessing camera. Check permissions.";
   }
 }
 
-// 2. Capture speech result and instantly trigger backend send
-recognition.onresult = async (event) => {
-  const userText = event.results[0][0].transcript;
-  console.log("You said:", userText);
+// Toggle between Front and Back Camera
+toggleCamBtn.addEventListener('click', () => {
+  useFacingMode = (useFacingMode === "user") ? "environment" : "user";
+  startCamera();
+});
 
-  if (userText.trim().length > 0) {
-    // Take a snapshot from your existing video element
-    const imageFrameData = captureWebcamFrame(); 
-
-    // Stop recognition so it doesn't listen to its own voice or background noise
-    recognition.stop(); 
-    
-    // Call your existing function that talks to your /api backend
-    await sendToGeminiBackend(userText, imageFrameData);
+// 2. Continuous Speech Recognition Loop Logic
+function startListeningLoop() {
+  if (!recognition || isAiSpeaking) return;
+  try {
+    recognition.start();
+    statusElement.textContent = "Listening... Speak now.";
+  } catch (e) {
+    // Avoid breaking if it's already running
   }
-};
+}
 
-// 3. Restart listening if it idles out or stops without a result
-recognition.onend = () => {
-  if (!isAiSpeaking) {
+if (recognition) {
+  recognition.onresult = async (event) => {
+    const userText = event.results[0][0].transcript;
+    statusElement.textContent = `You said: "${userText}"... Processing...`;
+
+    if (userText.trim().length > 0) {
+      recognition.stop();
+      
+      // Capture frame from active camera view
+      const canvas = document.createElement('canvas');
+      canvas.width = videoElement.videoWidth || 640;
+      canvas.height = videoElement.videoHeight || 480;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+      const base64Image = canvas.toDataURL('image/jpeg');
+
+      // Send voice text + camera frame to backend
+      await sendToGemini(userText, base64Image);
+    }
+  };
+
+  recognition.onend = () => {
+    if (!isAiSpeaking) {
+      startListeningLoop();
+    }
+  };
+}
+
+// 3. Send Everything to Vercel Endpoint
+async function sendToGemini(prompt, base64Data) {
+  try {
+    const response = await fetch('/api', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: prompt, image: base64Data })
+    });
+
+    const data = await response.json();
+    
+    if (data && data.reply) {
+      statusElement.textContent = "AI responding...";
+      speakResponse(data.reply);
+    } else {
+      statusElement.textContent = "Error reading response from backend.";
+      isAiSpeaking = false;
+      startListeningLoop();
+    }
+  } catch (error) {
+    console.error(error);
+    statusElement.textContent = "Server communication failed.";
+    isAiSpeaking = false;
     startListeningLoop();
   }
-};
+}
 
-// 4. Function to speak Gemini's reply out loud
-function speakApiResponse(text) {
+// 4. Text to Speech Logic
+function speakResponse(text) {
   isAiSpeaking = true;
-  recognition.stop(); // Absolute safety check
+  if (recognition) recognition.stop();
 
   const utterance = new SpeechSynthesisUtterance(text);
   
   utterance.onend = () => {
     isAiSpeaking = false;
-    // Turn the microphone back on immediately after speaking finishes!
-    startListeningLoop(); 
+    startListeningLoop();
   };
 
   utterance.onerror = () => {
@@ -73,5 +132,5 @@ function speakApiResponse(text) {
   synth.speak(utterance);
 }
 
-// NOTE: Make sure inside your existing backend response handler, 
-// you call `speakApiResponse(data.reply)` instead of just printing it on screen!
+// Launch application on load
+window.addEventListener('load', startCamera);
