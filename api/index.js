@@ -36,7 +36,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // Direct fetch call over the web — completely bypasses the broken node module
+    // Direct fetch works perfectly now that the compiler runtime environment matches ESM
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
       {
