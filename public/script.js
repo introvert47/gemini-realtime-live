@@ -1,74 +1,77 @@
-const video = document.getElementById('webcam');
-const askBtn = document.getElementById('askBtn');
-const promptInput = document.getElementById('promptInput');
-const responseText = document.getElementById('responseText');
-const statusDot = document.getElementById('statusDot');
-const statusText = document.getElementById('statusText');
-const canvas = document.getElementById('captureCanvas');
-const ctx = canvas.getContext('2d');
-
-// 1. Prompt your system to grab webcam/phone input stream
-async function initCamera() {
-    try {
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-            video: { width: 640, height: 480 }, 
-            audio: false 
-        });
-        video.srcObject = stream;
-    } catch (err) {
-        console.error("Camera hook failed:", err);
-        responseText.innerText = "Could not activate camera stream.";
-        statusText.innerText = "OFFLINE";
-        statusDot.style.background = "#f38ba8"; // Red alert color
-    }
+// Check for browser support
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+if (!SpeechRecognition) {
+  alert("Web Speech API is not supported in this browser. Try Chrome or Safari Mobile!");
 }
 
-// 2. Local Native Audio Text-to-Speech Output
-function triggerVoiceSynth(message) {
-    window.speechSynthesis.cancel(); // Flush old processes
-    const utter = new SpeechSynthesisUtterance(message);
-    window.speechSynthesis.speak(utter);
-}
+const recognition = new SpeechRecognition();
+recognition.continuous = false; // Process utterance by utterance
+recognition.interimResults = false;
+recognition.lang = 'en-US';
 
-// 3. Process Event Dispatching
-askBtn.addEventListener('click', async () => {
-    // Switch state UI to active thinking
-    askBtn.disabled = true;
-    statusDot.classList.add('thinking');
-    statusText.innerText = "AI THINKING...";
-    responseText.innerText = "Analyzing what you show me...";
+const synth = window.speechSynthesis;
+let isAiSpeaking = false;
 
-    // Snap current canvas capture matrix from video element
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL('image/jpeg');
-
-    try {
-        const response = await fetch('/api/analyze', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                image: dataUrl,
-                prompt: promptInput.value
-            })
-        });
-
-        const data = await response.json();
-
-        if (data.text) {
-            responseText.innerText = data.text;
-            triggerVoiceSynth(data.text);
-        } else {
-            responseText.innerText = "Error parsing response: " + data.error;
-        }
-    } catch (err) {
-        console.error(err);
-        responseText.innerText = "Connection lost to your local backend.";
-    } finally {
-        // Return back to tracking loop
-        askBtn.disabled = false;
-        statusDot.classList.remove('thinking');
-        statusText.innerText = "AI WATCHING";
-    }
+// 1. Automatically start listening as soon as the page loads
+window.addEventListener('load', () => {
+  startListeningLoop();
 });
 
-initCamera();
+function startListeningLoop() {
+  if (!isAiSpeaking) {
+    try {
+      recognition.start();
+      console.log("Listening for your voice...");
+    } catch (e) {
+      // Catch errors if it's already running
+    }
+  }
+}
+
+// 2. Capture speech result and instantly trigger backend send
+recognition.onresult = async (event) => {
+  const userText = event.results[0][0].transcript;
+  console.log("You said:", userText);
+
+  if (userText.trim().length > 0) {
+    // Take a snapshot from your existing video element
+    const imageFrameData = captureWebcamFrame(); 
+
+    // Stop recognition so it doesn't listen to its own voice or background noise
+    recognition.stop(); 
+    
+    // Call your existing function that talks to your /api backend
+    await sendToGeminiBackend(userText, imageFrameData);
+  }
+};
+
+// 3. Restart listening if it idles out or stops without a result
+recognition.onend = () => {
+  if (!isAiSpeaking) {
+    startListeningLoop();
+  }
+};
+
+// 4. Function to speak Gemini's reply out loud
+function speakApiResponse(text) {
+  isAiSpeaking = true;
+  recognition.stop(); // Absolute safety check
+
+  const utterance = new SpeechSynthesisUtterance(text);
+  
+  utterance.onend = () => {
+    isAiSpeaking = false;
+    // Turn the microphone back on immediately after speaking finishes!
+    startListeningLoop(); 
+  };
+
+  utterance.onerror = () => {
+    isAiSpeaking = false;
+    startListeningLoop();
+  };
+
+  synth.speak(utterance);
+}
+
+// NOTE: Make sure inside your existing backend response handler, 
+// you call `speakApiResponse(data.reply)` instead of just printing it on screen!
