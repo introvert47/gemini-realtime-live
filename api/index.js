@@ -1,9 +1,3 @@
-import { GoogleGenAI } from "@google/genai";
-
-// Initialize the Google Gen AI SDK
-// It automatically picks up the GEMINI_API_KEY environment variable from Vercel
-const ai = new GoogleGenAI();
-
 export default async function handler(req, res) {
   // Clear CORS blocks
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -20,17 +14,22 @@ export default async function handler(req, res) {
 
   try {
     const { prompt, image } = req.body;
+    const apiKey = process.env.GEMINI_API_KEY;
+
+    if (!apiKey) {
+      return res.status(500).json({ reply: "API Key is missing on Vercel environment settings." });
+    }
 
     if (!prompt) {
       return res.status(400).json({ error: 'Prompt is required' });
     }
 
-    let contents = [prompt];
+    // 1. Build a pure Google Gemini API payload structure
+    let parts = [{ text: prompt }];
 
-    // If an image is sent, strip the header data and format it perfectly for Gemini
     if (image && image.includes(',')) {
       const base64Data = image.split(',')[1];
-      contents.push({
+      parts.push({
         inlineData: {
           mimeType: "image/jpeg",
           data: base64Data
@@ -38,22 +37,31 @@ export default async function handler(req, res) {
       });
     }
 
-    // Call Gemini 2.5 Flash (the fastest real-time model to beat the 10-second timeout)
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: contents,
-      config: {
-        maxOutputTokens: 100 // Keep responses short so Text-to-Speech starts instantly!
+    // 2. Fire a direct HTTP POST request straight to Google's endpoints
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: parts }] })
       }
-    });
+    );
 
-    const replyText = response.text || "I see you, but I couldn't generate a text response.";
-    return res.status(200).json({ reply: replyText });
+    const data = await response.json();
+
+    // 3. Carefully parse out the text response safely
+    if (data && data.candidates && data.candidates[0].content.parts[0].text) {
+      const replyText = data.candidates[0].content.parts[0].text;
+      return res.status(200).json({ reply: replyText });
+    } else {
+      console.error("Unexpected Gemini Payload structure:", data);
+      return res.status(200).json({ reply: "I can see the camera feed, but I couldn't formulate a text answer." });
+    }
 
   } catch (error) {
-    console.error("Gemini Backend Error:", error);
+    console.error("Direct API Error:", error);
     return res.status(500).json({ 
-      reply: "Backend processing error.", 
+      reply: "Backend server communication failed.", 
       details: error.message 
     });
   }
