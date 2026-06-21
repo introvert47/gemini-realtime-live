@@ -3,7 +3,7 @@ const statusElement = document.getElementById('status');
 const toggleCamBtn = document.getElementById('toggle-cam-btn');
 
 let currentStream = null;
-let useFacingMode = "user"; // "user" = front/selfie, "environment" = back camera
+let useFacingMode = "user"; // "user" = front, "environment" = back
 let isAiSpeaking = false;
 
 // Initialize Web Speech APIs
@@ -19,7 +19,7 @@ if (recognition) {
   statusElement.textContent = "Speech recognition not supported in this browser.";
 }
 
-// 1. Start Camera Function with specific Facing Mode
+// 1. Start Camera
 async function startCamera() {
   if (currentStream) {
     currentStream.getTracks().forEach(track => track.stop());
@@ -27,7 +27,12 @@ async function startCamera() {
 
   try {
     const constraints = {
-      video: { facingMode: useFacingMode },
+      video: { 
+        facingMode: useFacingMode,
+        // Restrict camera resolution to avoid massive processing sizes
+        width: { ideal: 640 },
+        height: { ideal: 480 }
+      },
       audio: false
     };
     currentStream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -46,14 +51,14 @@ toggleCamBtn.addEventListener('click', () => {
   startCamera();
 });
 
-// 2. Continuous Speech Recognition Loop Logic
+// 2. Speech Recognition Loop Logic
 function startListeningLoop() {
   if (!recognition || isAiSpeaking) return;
   try {
     recognition.start();
     statusElement.textContent = "Listening... Speak now.";
   } catch (e) {
-    // Avoid breaking if it's already running
+    // Avoid breaking if already running
   }
 }
 
@@ -65,16 +70,21 @@ if (recognition) {
     if (userText.trim().length > 0) {
       recognition.stop();
       
-      // Capture frame from active camera view
+      // CAPTURE AND COMPRESS IMAGE HERE:
       const canvas = document.createElement('canvas');
-      canvas.width = videoElement.videoWidth || 640;
-      canvas.height = videoElement.videoHeight || 480;
+      // Downscale canvas coordinates explicitly to 640x480
+      canvas.width = 640;
+      canvas.height = 480;
+      
       const ctx = canvas.getContext('2d');
       ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
-      const base64Image = canvas.toDataURL('image/jpeg');
+      
+      // Use jpeg format and compress down to 0.6 quality (60%) 
+      // This shrinks the payload from megabytes down to just a few kilobytes!
+      const compressedBase64Image = canvas.toDataURL('image/jpeg', 0.6);
 
-      // Send voice text + camera frame to backend
-      await sendToGemini(userText, base64Image);
+      // Send optimized payload to backend
+      await sendToGemini(userText, compressedBase64Image);
     }
   };
 
@@ -106,7 +116,7 @@ async function sendToGemini(prompt, base64Data) {
     }
   } catch (error) {
     console.error(error);
-    statusElement.textContent = "Server communication failed.";
+    statusElement.textContent = "Server communication failed. Retrying...";
     isAiSpeaking = false;
     startListeningLoop();
   }
@@ -132,5 +142,4 @@ function speakResponse(text) {
   synth.speak(utterance);
 }
 
-// Launch application on load
 window.addEventListener('load', startCamera);
