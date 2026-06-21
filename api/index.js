@@ -24,7 +24,6 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Prompt is required' });
     }
 
-    // Format parts matching Google's exact specification
     let parts = [{ text: prompt }];
 
     if (image && image.includes(',')) {
@@ -37,14 +36,13 @@ export default async function handler(req, res) {
       });
     }
 
-    // Fire the request with standard browser/server headers so Google accepts it
+    // Direct fetch call over the web — completely bypasses the broken node module
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
       {
         method: 'POST',
         headers: { 
-          'Content-Type': 'application/json',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' // Prevents Google from dropping the connection
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({ 
           contents: [{ parts: parts }] 
@@ -54,17 +52,14 @@ export default async function handler(req, res) {
 
     const data = await response.json();
 
-    // Safely look inside the JSON tree response
     if (data && data.candidates && data.candidates[0]?.content?.parts[0]?.text) {
       const replyText = data.candidates[0].content.parts[0].text;
       return res.status(200).json({ reply: replyText });
     } else {
-      console.error("Google API rejected or returned error structure:", data);
       return res.status(200).json({ reply: "The server received the message but could not parse an AI response." });
     }
 
   } catch (error) {
-    console.error("Backend Server Error:", error);
     return res.status(500).json({ 
       reply: "Backend server communication failed.", 
       details: error.message 

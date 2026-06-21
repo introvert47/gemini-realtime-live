@@ -3,23 +3,18 @@ const statusElement = document.getElementById('status');
 const toggleCamBtn = document.getElementById('toggle-cam-btn');
 
 let currentStream = null;
-let useFacingMode = "user"; // "user" = front, "environment" = back
+let useFacingMode = "user"; 
 let isAiSpeaking = false;
 
-// Initialize Web Speech APIs
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 const recognition = SpeechRecognition ? new SpeechRecognition() : null;
 const synth = window.speechSynthesis;
 
-if (recognition) {
-  recognition.continuous = false;
-  recognition.interimResults = false;
-  recognition.lang = 'en-US';
-} else {
-  statusElement.textContent = "Speech recognition not supported in this browser.";
-}
+window.addEventListener('click', () => {
+  const look = new SpeechSynthesisUtterance("");
+  window.speechSynthesis.speak(look);
+}, { once: true });
 
-// 1. Start Camera
 async function startCamera() {
   if (currentStream) {
     currentStream.getTracks().forEach(track => track.stop());
@@ -29,61 +24,52 @@ async function startCamera() {
     const constraints = {
       video: { 
         facingMode: useFacingMode,
-        // Restrict camera resolution to avoid massive processing sizes
-        width: { ideal: 640 },
-        height: { ideal: 480 }
+        width: { ideal: 320 }, // Drop source stream size to keep data small
+        height: { ideal: 240 }
       },
       audio: false
     };
     currentStream = await navigator.mediaDevices.getUserMedia(constraints);
     videoElement.srcObject = currentStream;
-    statusElement.textContent = "Listening... Speak naturally!";
+    statusElement.textContent = "System Ready. Speak now.";
     startListeningLoop();
   } catch (err) {
-    console.error("Camera error: ", err);
-    statusElement.textContent = "Error accessing camera. Check permissions.";
+    statusElement.textContent = "Camera initialization blocked.";
   }
 }
 
-// Toggle between Front and Back Camera
 toggleCamBtn.addEventListener('click', () => {
   useFacingMode = (useFacingMode === "user") ? "environment" : "user";
   startCamera();
 });
 
-// 2. Speech Recognition Loop Logic
 function startListeningLoop() {
   if (!recognition || isAiSpeaking) return;
   try {
     recognition.start();
     statusElement.textContent = "Listening... Speak now.";
-  } catch (e) {
-    // Avoid breaking if already running
-  }
+  } catch (e) {}
 }
 
 if (recognition) {
   recognition.onresult = async (event) => {
     const userText = event.results[0][0].transcript;
-    statusElement.textContent = `You said: "${userText}"... Processing...`;
+    statusElement.textContent = `Processing: "${userText}"`;
 
     if (userText.trim().length > 0) {
       recognition.stop();
       
-      // CAPTURE AND COMPRESS IMAGE HERE:
       const canvas = document.createElement('canvas');
-      // Downscale canvas coordinates explicitly to 640x480
-      canvas.width = 640;
-      canvas.height = 480;
+      // FIXED: Hardcode static absolute pixel dimensions to ignore mobile High-DPI upscaling
+      canvas.width = 320;
+      canvas.height = 240;
       
       const ctx = canvas.getContext('2d');
-      ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+      ctx.drawImage(videoElement, 0, 0, 320, 240);
       
-      // Use jpeg format and compress down to 0.6 quality (60%) 
-      // This shrinks the payload from megabytes down to just a few kilobytes!
-      const compressedBase64Image = canvas.toDataURL('image/jpeg', 0.6);
+      // Use maximum compression (0.3 quality) to force payload down to kilobytes
+      const compressedBase64Image = canvas.toDataURL('image/jpeg', 0.3);
 
-      // Send optimized payload to backend
       await sendToGemini(userText, compressedBase64Image);
     }
   };
@@ -95,7 +81,6 @@ if (recognition) {
   };
 }
 
-// 3. Send Everything to Vercel Endpoint
 async function sendToGemini(prompt, base64Data) {
   try {
     const response = await fetch('/api', {
@@ -109,20 +94,24 @@ async function sendToGemini(prompt, base64Data) {
     if (data && data.reply) {
       statusElement.textContent = "AI responding...";
       speakResponse(data.reply);
+    } else if (data && data.details) {
+      statusElement.textContent = `Server Error: ${data.details}`;
+      resetLoop();
     } else {
-      statusElement.textContent = "Error reading response from backend.";
-      isAiSpeaking = false;
-      startListeningLoop();
+      statusElement.textContent = "Response parsing failed.";
+      resetLoop();
     }
   } catch (error) {
-    console.error(error);
-    statusElement.textContent = "Server communication failed. Retrying...";
-    isAiSpeaking = false;
-    startListeningLoop();
+    statusElement.textContent = "Payload size blocked connection.";
+    resetLoop();
   }
 }
 
-// 4. Text to Speech Logic
+function resetLoop() {
+  isAiSpeaking = false;
+  setTimeout(startListeningLoop, 2000);
+}
+
 function speakResponse(text) {
   isAiSpeaking = true;
   if (recognition) recognition.stop();
